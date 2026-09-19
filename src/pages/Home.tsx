@@ -1,76 +1,50 @@
-import { useEffect, useMemo, useState } from "react";
-import { GENRES } from "@/audio/genres";
-import { useMashup } from "@/hooks/useMashup";
-import { useAudioBufferPlayer } from "@/hooks/useAudioBufferPlayer";
+import { useCallback, useEffect, useRef } from "react";
+import { MIX_PRESETS } from "@/audio/genres";
+import { useProject } from "@/hooks/useProject";
 import { supabaseEnabled } from "@/lib/supabase";
-import TrackCard from "@/components/TrackCard";
-import WaveformCanvas from "@/components/WaveformCanvas";
+import Playlist from "@/components/Playlist";
+import ResultDeck from "@/components/ResultDeck";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import { Slider } from "@/components/ui/slider";
-import { Badge } from "@/components/ui/badge";
-import { computeWaveform, mixToMono } from "@/audio/analysis";
+import { Switch } from "@/components/ui/switch";
+import { formatTime } from "@/lib/format";
 import {
   AudioWaveform,
   Cloud,
   CloudOff,
-  Download,
-  Play,
-  Pause,
-  RotateCcw,
+  FolderOpen,
   Sparkles,
+  Wand2,
+  SlidersHorizontal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import "../App.css";
 
-function formatTime(sec: number): string {
-  if (!Number.isFinite(sec) || sec <= 0) return "0:00";
-  const m = Math.floor(sec / 60);
-  const s = Math.floor(sec % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
 export default function Home() {
-  const {
-    trackA,
-    trackB,
-    stage,
-    progressStage,
-    progress,
-    result,
-    error,
-    savedToCloud,
-    loadSlot,
-    generate,
-    reset,
-  } = useMashup();
+  const p = useProject();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const busy = p.stage === "generating";
 
-  const [genreId, setGenreId] = useState("electro");
-  const [matchKey, setMatchKey] = useState(true);
-  const [bpmOverride, setBpmOverride] = useState<number | null>(null);
-
-  // result playback (Web Audio — robust for large rendered buffers)
-  const player = useAudioBufferPlayer();
-  const resultUrl = useMemo(() => (result ? URL.createObjectURL(result.wavBlob) : null), [result]);
+  // debug/testing handles (also used by automated end-to-end checks)
   useEffect(() => {
-    // debug/testing handle
-    (window as unknown as Record<string, unknown>).__mfResult = result ?? null;
-  }, [result]);
-  const resultWaveform = useMemo(() => {
-    if (!result) return null;
-    return computeWaveform(mixToMono(result.buffer), 1200);
-  }, [result]);
+    const w = window as unknown as Record<string, unknown>;
+    w.__mfResult = p.result ?? null;
+    w.__mf = p;
+  });
 
-  useEffect(() => {
-    player.load(result?.buffer ?? null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result]);
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) void p.addFiles(e.dataTransfer.files);
+    },
+    [p],
+  );
 
-  const effectiveBpm = bpmOverride ?? trackA?.analysis.bpm ?? 120;
-  const ready = trackA && trackB && stage !== "generating" && stage !== "loading";
+  const canGenerate = p.included.length > 0 && !busy;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -89,7 +63,7 @@ export default function Home() {
           <div className="flex items-center gap-2">
             {supabaseEnabled ? (
               <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30 gap-1">
-                <Cloud className="w-3 h-3" /> Supabase sync
+                <Cloud className="w-3 h-3" /> cloud save on
               </Badge>
             ) : (
               <Badge variant="secondary" className="bg-zinc-800 text-zinc-400 gap-1">
@@ -100,207 +74,219 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8 space-y-8">
+      <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
         {/* intro */}
         <div className="text-center space-y-2">
           <h2 className="text-3xl md:text-4xl font-black tracking-tight">
-            Drop two tracks.{" "}
+            Drop your tracks.{" "}
             <span className="bg-gradient-to-r from-fuchsia-400 to-cyan-300 bg-clip-text text-transparent">
-              Get a mashup.
+              Get a DJ mix.
             </span>
           </h2>
           <p className="text-zinc-400 max-w-xl mx-auto text-sm">
-            MashForge analyzes BPM and musical key of both songs, time-stretches and pitch-matches
-            the guest track, then arranges a full genre-structured mix — electro, latin dance,
-            hip-hop, house — rendered entirely in your browser.
+            MashForge detects BPM and key, beat-matches every song, and arranges them into one
+            seamless mix — track by track, with crafted transitions — rendered entirely in your browser.
           </p>
         </div>
 
-        {/* upload deck */}
-        <div className="grid md:grid-cols-2 gap-4">
-          <TrackCard
-            label="Track A — Base"
-            slot="A"
-            track={trackA}
-            accent="#22d3ee"
-            loading={stage === "loading"}
-            onFile={loadSlot}
+        {/* dropzone */}
+        <div
+          data-testid="dropzone"
+          onDrop={onDrop}
+          onDragOver={(e) => e.preventDefault()}
+          onClick={() => fileInputRef.current?.click()}
+          className="rounded-xl border-2 border-dashed border-zinc-700 hover:border-cyan-400/60 bg-zinc-900/40 px-6 py-8 text-center cursor-pointer transition-colors"
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="audio/*"
+            multiple
+            className="hidden"
+            data-testid="file-input"
+            onChange={(e) => {
+              if (e.target.files?.length) void p.addFiles(e.target.files);
+              e.target.value = "";
+            }}
           />
-          <TrackCard
-            label="Track B — Guest"
-            slot="B"
-            track={trackB}
-            accent="#e879f9"
-            loading={stage === "loading"}
-            onFile={loadSlot}
-          />
+          <FolderOpen className="w-8 h-8 mx-auto mb-2 text-zinc-500" />
+          <p className="text-sm font-semibold">Drop audio files here, or click to browse</p>
+          <p className="text-xs text-zinc-500 mt-1">
+            Add as many tracks as you like — MP3, WAV, OGG… each at least ~6 seconds
+          </p>
         </div>
 
-        {error && (
-          <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-            {error}
+        {/* mode tabs */}
+        <div className="flex rounded-lg border border-zinc-800 bg-zinc-900/60 p-1 w-fit mx-auto" data-testid="mode-tabs">
+          <button
+            data-testid="mode-auto"
+            onClick={() => p.setMode("auto")}
+            className={cn(
+              "flex items-center gap-2 rounded-md px-5 py-2 text-sm font-bold transition-all",
+              p.mode === "auto"
+                ? "bg-gradient-to-r from-fuchsia-500 to-cyan-500 text-zinc-950"
+                : "text-zinc-400 hover:text-zinc-200",
+            )}
+          >
+            <Wand2 className="w-4 h-4" /> Auto Remix
+          </button>
+          <button
+            data-testid="mode-manual"
+            onClick={() => p.setMode("manual")}
+            className={cn(
+              "flex items-center gap-2 rounded-md px-5 py-2 text-sm font-bold transition-all",
+              p.mode === "manual"
+                ? "bg-gradient-to-r from-fuchsia-500 to-cyan-500 text-zinc-950"
+                : "text-zinc-400 hover:text-zinc-200",
+            )}
+          >
+            <SlidersHorizontal className="w-4 h-4" /> Manual
+          </button>
+        </div>
+
+        {/* playlist (both modes edit the same arrangement) */}
+        {(p.playOrder.length > 0 || p.pending.length > 0) && (
+          <Playlist
+            mode={p.mode}
+            playOrder={p.playOrder}
+            pending={p.pending}
+            transitions={p.arrangement.transitions}
+            preset={p.preset}
+            plan={p.result?.plan ?? null}
+            busy={busy}
+            onRemove={p.removeTrack}
+            onRemovePending={p.removePending}
+            onMove={p.moveTrack}
+            onReplace={p.replaceTrack}
+            onUpdate={p.updateTrack}
+            onSetTransition={p.setTransition}
+          />
+        )}
+
+        {p.error && (
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300" data-testid="error-banner">
+            {p.error}
           </div>
         )}
 
-        {/* genre + controls */}
-        <Card className="bg-zinc-900/60 border-zinc-800">
-          <CardContent className="p-6 space-y-6">
-            <div>
-              <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">
-                  Pick a sound
-                </h3>
-                <p className="text-xs text-zinc-600">drop tracks → pick a genre → forge — that&apos;s it</p>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                {GENRES.map((g) => (
-                  <button
-                    key={g.id}
-                    onClick={() => setGenreId(g.id)}
-                    className={cn(
-                      "rounded-lg border p-3 text-left transition-all",
-                      genreId === g.id
-                        ? "border-fuchsia-500 bg-fuchsia-500/10 shadow-[0_0_20px_rgba(217,70,239,0.15)]"
-                        : "border-zinc-800 bg-zinc-950/50 hover:border-zinc-600",
-                    )}
-                  >
-                    <div className="text-xl mb-1">{g.emoji}</div>
-                    <div className="text-sm font-semibold">{g.name}</div>
-                    <div className="text-[11px] text-zinc-500 leading-tight mt-1">{g.description}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <details className="group rounded-lg border border-zinc-800 bg-zinc-950/40">
-              <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between text-sm font-semibold text-zinc-400 hover:text-zinc-200 select-none">
-                <span>Fine-tune (optional — MashForge auto-matches tempo &amp; key for you)</span>
-                <span className="text-xs text-zinc-600 group-open:hidden">show</span>
-                <span className="text-xs text-zinc-600 hidden group-open:inline">hide</span>
-              </summary>
-              <div className="grid md:grid-cols-2 gap-6 px-4 pb-4">
-                <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-                  <div>
-                    <Label htmlFor="match-key" className="text-sm font-semibold">
-                      Pitch-match guest track
-                    </Label>
-                    <p className="text-xs text-zinc-500 mt-0.5">
-                      Shifts Track B into {trackA ? `the key of Track A` : "Track A's key"}
-                    </p>
-                  </div>
-                  <Switch id="match-key" checked={matchKey} onCheckedChange={setMatchKey} />
+        {/* AUTO panel */}
+        {p.mode === "auto" && (
+          <Card className="bg-zinc-900/60 border-zinc-800" data-testid="auto-panel">
+            <CardContent className="p-6 space-y-6">
+              <div>
+                <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                  <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">
+                    Pick a mix style
+                  </h3>
+                  <p className="text-xs text-zinc-600">add tracks → pick a style → generate — that&apos;s it</p>
                 </div>
-
-                <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-                  <div className="flex justify-between items-baseline mb-2">
-                    <Label className="text-sm font-semibold">Target BPM</Label>
-                    <span className="text-sm font-mono text-cyan-300">{effectiveBpm.toFixed(1)}</span>
-                  </div>
-                  <Slider
-                    value={[effectiveBpm]}
-                    min={80}
-                    max={160}
-                    step={0.5}
-                    onValueChange={([v]) => setBpmOverride(v)}
-                    disabled={!trackA}
-                  />
-                  <button
-                    className="text-[11px] text-zinc-500 hover:text-zinc-300 mt-1"
-                    onClick={() => setBpmOverride(null)}
-                  >
-                    reset to Track A tempo
-                  </button>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                  {MIX_PRESETS.map((g) => (
+                    <button
+                      key={g.id}
+                      data-testid={`preset-${g.id}`}
+                      onClick={() => p.selectPreset(g.id)}
+                      className={cn(
+                        "rounded-lg border p-3 text-left transition-all",
+                        p.presetId === g.id
+                          ? "border-fuchsia-500 bg-fuchsia-500/10 shadow-[0_0_20px_rgba(217,70,239,0.15)]"
+                          : "border-zinc-800 bg-zinc-950/50 hover:border-zinc-600",
+                      )}
+                    >
+                      <div className="text-xl mb-1">{g.emoji}</div>
+                      <div className="text-sm font-semibold">{g.name}</div>
+                      <div className="text-[11px] text-zinc-500 leading-tight mt-1">{g.description}</div>
+                    </button>
+                  ))}
                 </div>
               </div>
-            </details>
 
-            <div className="flex flex-col items-center gap-3 pt-2">
-              <Button
-                size="lg"
-                disabled={!ready}
-                onClick={() => generate(genreId, matchKey, bpmOverride)}
-                className="bg-gradient-to-r from-fuchsia-500 to-cyan-500 text-zinc-950 font-bold px-10 hover:opacity-90 disabled:opacity-30"
-              >
-                <Sparkles className="w-4 h-4 mr-2" />
-                {stage === "generating" ? "Forging…" : "Forge Mashup"}
-              </Button>
-              {!trackA || !trackB ? (
-                <p className="text-xs text-zinc-600">Load both tracks to enable the forge</p>
-              ) : null}
-
-              {stage === "generating" && (
-                <div className="w-full max-w-md space-y-2">
-                  <Progress value={progress * 100} className="h-2" />
-                  <p className="text-xs text-center text-zinc-400">{progressStage}</p>
+              {/* proposed arrangement */}
+              {p.included.length > 0 && (
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-4 py-3 space-y-2" data-testid="auto-proposal">
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <span className="text-xs uppercase tracking-wider text-zinc-500">Proposed mix</span>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="keep-order" className="text-xs text-zinc-400">Keep my track order</Label>
+                      <Switch
+                        id="keep-order"
+                        checked={p.arrangement.keepUserOrder}
+                        onCheckedChange={p.setKeepUserOrder}
+                        data-testid="keep-order"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-sm">
+                    <span className="text-zinc-300">{p.included.map((t) => t.fileName).join(" → ")}</span>
+                  </p>
+                  <p className="text-xs text-zinc-500 font-mono" data-testid="auto-estimate">
+                    {p.preset.emoji} {p.preset.name} · {p.targetBpm.toFixed(1)} BPM · ≈ {formatTime(p.estimatedSeconds)}
+                  </p>
                 </div>
               )}
-            </div>
-          </CardContent>
-        </Card>
 
-        {/* result */}
-        {result && resultUrl && (
-          <Card className="bg-zinc-900/60 border-zinc-800 overflow-hidden">
-            <div className="h-1 bg-gradient-to-r from-fuchsia-500 to-cyan-400" />
-            <CardContent className="p-6 space-y-4">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div>
-                  <h3 className="text-lg font-bold">Your mashup is ready 🔥</h3>
-                  <p className="text-xs text-zinc-400">{result.summary}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {savedToCloud === true && (
-                    <Badge className="bg-emerald-500/15 text-emerald-300 border-emerald-500/30">
-                      saved to cloud
-                    </Badge>
-                  )}
-                  <Button variant="outline" size="sm" onClick={reset} className="border-zinc-700">
-                    <RotateCcw className="w-4 h-4 mr-1" /> New session
-                  </Button>
-                  <a href={resultUrl} download={`mashforge-${result.plan.genre.id}-${result.plan.targetBpm.toFixed(0)}bpm.wav`}>
-                    <Button size="sm" className="bg-cyan-500 text-zinc-950 font-semibold hover:bg-cyan-400">
-                      <Download className="w-4 h-4 mr-1" /> Download WAV
-                    </Button>
-                  </a>
-                </div>
-              </div>
-
-              <div className="h-24 rounded bg-zinc-950/70 p-2">
-                <WaveformCanvas waveform={resultWaveform} color="#a3e635" />
-              </div>
-
-              <div className="flex items-center gap-4">
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="border-zinc-700 rounded-full w-11 h-11 shrink-0"
-                  onClick={player.toggle}
-                >
-                  {player.playing ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
-                </Button>
-                <div className="flex-1">
-                  <div className="h-2 rounded-full bg-zinc-800 overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-fuchsia-500 to-cyan-400 transition-[width] duration-100"
-                      style={{ width: player.duration > 0 ? `${(player.position / player.duration) * 100}%` : "0%" }}
-                    />
-                  </div>
-                  <div className="flex justify-between text-[11px] text-zinc-500 mt-1 font-mono">
-                    <span>{formatTime(player.position)}</span>
-                    <span>{formatTime(player.duration)}</span>
-                  </div>
-                </div>
-              </div>
+              {/* fine-tune (collapsed advanced controls) */}
+              <FineTune p={p} />
             </CardContent>
           </Card>
+        )}
+
+        {/* MANUAL mode: same tempo/pitch controls + editing hint */}
+        {p.mode === "manual" && p.playOrder.length > 0 && (
+          <>
+            <p className="text-center text-xs text-zinc-500" data-testid="manual-hint">
+              Manual mode — expand a track to trim, set volume, mute or correct its BPM. Edit the transition
+              strips between tracks. Everything here shapes the same mix Auto Remix creates.
+            </p>
+            <Card className="bg-zinc-900/60 border-zinc-800" data-testid="manual-panel">
+              <CardContent className="p-6">
+                <FineTune p={p} defaultOpen />
+              </CardContent>
+            </Card>
+          </>
+        )}
+
+        {/* generate */}
+        <div className="flex flex-col items-center gap-3">
+          <Button
+            size="lg"
+            disabled={!canGenerate}
+            onClick={() => void p.generate()}
+            data-testid="generate"
+            className="bg-gradient-to-r from-fuchsia-500 to-cyan-500 text-zinc-950 font-bold px-10 hover:opacity-90 disabled:opacity-30"
+          >
+            <Sparkles className="w-4 h-4 mr-2" />
+            {busy ? "Forging…" : "Generate Mix"}
+          </Button>
+          {p.playOrder.length === 0 && p.pending.length === 0 && (
+            <p className="text-xs text-zinc-600">Add at least one track to enable the forge</p>
+          )}
+          {busy && (
+            <div className="w-full max-w-md space-y-2">
+              <Progress value={p.progress * 100} className="h-2" />
+              <p className="text-xs text-center text-zinc-400">{p.progressStage}</p>
+            </div>
+          )}
+        </div>
+
+        {/* result */}
+        {p.result && (
+          <ResultDeck
+            result={p.result}
+            stale={!p.isCurrentResult}
+            saveState={p.saveState}
+            cloudEnabled={supabaseEnabled}
+            onRetrySave={() => void p.retrySave()}
+            onReset={p.reset}
+          />
         )}
 
         {/* how it works */}
         <div className="grid md:grid-cols-3 gap-4 pb-10">
           {[
-            { icon: "🎯", title: "Analyze", text: "Energy-flux autocorrelation finds the BPM; a chromagram with Krumhansl-Schmuckler profiles finds the key." },
-            { icon: "🧬", title: "Match", text: "WSOLA time-stretching locks the guest track to your target tempo without changing pitch — then shifts it into key." },
-            { icon: "🎛️", title: "Arrange", text: "Genre presets build a real structure: intro, build, drop, breakdown — with sidechain pump, filters and crossfades." },
+            { icon: "🎯", title: "Analyze", text: "Energy-flux autocorrelation finds the BPM; a chromagram with Krumhansl-Schmuckler profiles finds the key of every track." },
+            { icon: "🧬", title: "Match", text: "WSOLA time-stretching locks each track to the mix tempo without changing pitch — optional key-matching blends them harmonically." },
+            { icon: "🎛️", title: "Arrange", text: "Tracks play one after another on a shared beat grid, glued by DJ-style transitions — filter sweeps, echo cuts, long blends." },
           ].map((f) => (
             <Card key={f.title} className="bg-zinc-900/40 border-zinc-800/70">
               <CardContent className="p-5">
@@ -313,5 +299,54 @@ export default function Home() {
         </div>
       </main>
     </div>
+  );
+}
+
+/** Advanced tempo/key controls — shared by Auto (collapsed) and Manual. */
+function FineTune({ p, defaultOpen = false }: { p: ReturnType<typeof useProject>; defaultOpen?: boolean }) {
+  return (
+    <details className="group rounded-lg border border-zinc-800 bg-zinc-950/40" open={defaultOpen}>
+      <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between text-sm font-semibold text-zinc-400 hover:text-zinc-200 select-none">
+        <span>Fine-tune (optional)</span>
+        <span className="text-xs text-zinc-600 group-open:hidden">show</span>
+        <span className="text-xs text-zinc-600 hidden group-open:inline">hide</span>
+      </summary>
+      <div className="grid md:grid-cols-2 gap-6 px-4 pb-4">
+        <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
+          <div>
+            <Label htmlFor="pitch-match" className="text-sm font-semibold">Pitch-match tracks</Label>
+            <p className="text-xs text-zinc-500 mt-0.5">Shift every track toward the first track&apos;s key</p>
+          </div>
+          <Switch
+            id="pitch-match"
+            checked={p.arrangement.pitchMatch}
+            onCheckedChange={p.setPitchMatch}
+            data-testid="pitch-match"
+          />
+        </div>
+        <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
+          <div className="flex justify-between items-baseline mb-2">
+            <Label className="text-sm font-semibold">Target BPM</Label>
+            <span className="text-sm font-mono text-cyan-300" data-testid="target-bpm-val">{p.targetBpm.toFixed(1)}</span>
+          </div>
+          <Slider
+            value={[p.targetBpm]}
+            min={80}
+            max={160}
+            step={0.5}
+            disabled={p.included.length === 0}
+            data-testid="target-bpm"
+            onValueChange={([v]) => p.setTargetBpm(v)}
+          />
+          <button
+            className="text-[11px] text-zinc-500 hover:text-zinc-300 mt-1"
+            onClick={() => p.setTargetBpm(null)}
+            data-testid="target-bpm-reset"
+          >
+            reset to auto (median of tracks)
+          </button>
+        </div>
+      </div>
+    </details>
   );
 }
