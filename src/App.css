@@ -1,0 +1,8 @@
+/* MashForge app-specific styles */
+html {
+  background-color: #09090b;
+}
+
+audio::-webkit-media-controls-panel {
+  background-color: #27272a;
+}
