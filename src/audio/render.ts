@@ -56,6 +56,19 @@ export async function renderMashup(
 
   const ctx = new OfflineAudioContext(2, Math.ceil(totalSec * sr), sr);
 
+  // Peak of a processed track (for loudness normalization)
+  const peakOf = (track: ProcessedTrack): number => {
+    let peak = 0;
+    for (const data of track.channels) {
+      const stride = Math.max(1, data.length >> 16);
+      for (let i = 0; i < data.length; i += stride) {
+        const v = Math.abs(data[i]);
+        if (v > peak) peak = v;
+      }
+    }
+    return peak;
+  };
+
   const makeSource = (track: ProcessedTrack): AudioBufferSourceNode => {
     const len = Math.max(...track.channels.map((c) => c.length));
     const buf = ctx.createBuffer(track.channels.length, len, sr);
@@ -67,6 +80,15 @@ export async function renderMashup(
     src.loop = true; // tile under the whole arrangement
     return src;
   };
+
+  // Normalize both tracks to the same peak level so neither dominates or clips.
+  const TARGET_PEAK = 0.8;
+  const normA = ctx.createGain();
+  const normB = ctx.createGain();
+  const pA = peakOf(a);
+  const pB = peakOf(b);
+  normA.gain.value = pA > 1e-6 ? TARGET_PEAK / pA : 1;
+  normB.gain.value = pB > 1e-6 ? TARGET_PEAK / pB : 1;
 
   const masterA = ctx.createGain();
   const masterB = ctx.createGain();
@@ -81,11 +103,21 @@ export async function renderMashup(
   hpB.type = "highpass";
   hpB.frequency.value = 20;
 
+  // Safety limiter on the mix bus: the two normalized tracks can sum past 0 dB
+  // during drops — catch peaks instead of hard-clipping.
+  const limiter = ctx.createDynamicsCompressor();
+  limiter.threshold.value = -4;
+  limiter.knee.value = 2;
+  limiter.ratio.value = 16;
+  limiter.attack.value = 0.002;
+  limiter.release.value = 0.2;
+
   const srcA = makeSource(a);
   const srcB = makeSource(b);
 
-  srcA.connect(filterA).connect(masterA).connect(ctx.destination);
-  srcB.connect(filterB).connect(hpB).connect(pumpGain).connect(masterB).connect(ctx.destination);
+  srcA.connect(normA).connect(filterA).connect(masterA).connect(limiter);
+  srcB.connect(normB).connect(filterB).connect(hpB).connect(pumpGain).connect(masterB).connect(limiter);
+  limiter.connect(ctx.destination);
 
   // Per-section gain/filter automation
   for (const { startSec, section } of placed) {

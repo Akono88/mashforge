@@ -55,6 +55,10 @@ export default function Home() {
   // result playback (Web Audio — robust for large rendered buffers)
   const player = useAudioBufferPlayer();
   const resultUrl = useMemo(() => (result ? URL.createObjectURL(result.wavBlob) : null), [result]);
+  useEffect(() => {
+    // debug/testing handle
+    (window as unknown as Record<string, unknown>).__mfResult = result ?? null;
+  }, [result]);
   const resultWaveform = useMemo(() => {
     if (!result) return null;
     return computeWaveform(mixToMono(result.buffer), 1200);
@@ -142,9 +146,12 @@ export default function Home() {
         <Card className="bg-zinc-900/60 border-zinc-800">
           <CardContent className="p-6 space-y-6">
             <div>
-              <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400 mb-3">
-                Genre preset
-              </h3>
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">
+                  Pick a sound
+                </h3>
+                <p className="text-xs text-zinc-600">drop tracks → pick a genre → forge — that&apos;s it</p>
+              </div>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                 {GENRES.map((g) => (
                   <button
@@ -165,40 +172,47 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-                <div>
-                  <Label htmlFor="match-key" className="text-sm font-semibold">
-                    Pitch-match guest track
-                  </Label>
-                  <p className="text-xs text-zinc-500 mt-0.5">
-                    Shifts Track B into {trackA ? `the key of Track A` : "Track A's key"}
-                  </p>
+            <details className="group rounded-lg border border-zinc-800 bg-zinc-950/40">
+              <summary className="cursor-pointer list-none px-4 py-3 flex items-center justify-between text-sm font-semibold text-zinc-400 hover:text-zinc-200 select-none">
+                <span>Fine-tune (optional — MashForge auto-matches tempo &amp; key for you)</span>
+                <span className="text-xs text-zinc-600 group-open:hidden">show</span>
+                <span className="text-xs text-zinc-600 hidden group-open:inline">hide</span>
+              </summary>
+              <div className="grid md:grid-cols-2 gap-6 px-4 pb-4">
+                <div className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
+                  <div>
+                    <Label htmlFor="match-key" className="text-sm font-semibold">
+                      Pitch-match guest track
+                    </Label>
+                    <p className="text-xs text-zinc-500 mt-0.5">
+                      Shifts Track B into {trackA ? `the key of Track A` : "Track A's key"}
+                    </p>
+                  </div>
+                  <Switch id="match-key" checked={matchKey} onCheckedChange={setMatchKey} />
                 </div>
-                <Switch id="match-key" checked={matchKey} onCheckedChange={setMatchKey} />
-              </div>
 
-              <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
-                <div className="flex justify-between items-baseline mb-2">
-                  <Label className="text-sm font-semibold">Target BPM</Label>
-                  <span className="text-sm font-mono text-cyan-300">{effectiveBpm.toFixed(1)}</span>
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 px-4 py-3">
+                  <div className="flex justify-between items-baseline mb-2">
+                    <Label className="text-sm font-semibold">Target BPM</Label>
+                    <span className="text-sm font-mono text-cyan-300">{effectiveBpm.toFixed(1)}</span>
+                  </div>
+                  <Slider
+                    value={[effectiveBpm]}
+                    min={80}
+                    max={160}
+                    step={0.5}
+                    onValueChange={([v]) => setBpmOverride(v)}
+                    disabled={!trackA}
+                  />
+                  <button
+                    className="text-[11px] text-zinc-500 hover:text-zinc-300 mt-1"
+                    onClick={() => setBpmOverride(null)}
+                  >
+                    reset to Track A tempo
+                  </button>
                 </div>
-                <Slider
-                  value={[effectiveBpm]}
-                  min={80}
-                  max={160}
-                  step={0.5}
-                  onValueChange={([v]) => setBpmOverride(v)}
-                  disabled={!trackA}
-                />
-                <button
-                  className="text-[11px] text-zinc-500 hover:text-zinc-300 mt-1"
-                  onClick={() => setBpmOverride(null)}
-                >
-                  reset to Track A tempo
-                </button>
               </div>
-            </div>
+            </details>
 
             <div className="flex flex-col items-center gap-3 pt-2">
               <Button

@@ -3,44 +3,46 @@
 
 /**
  * Time-stretch a mono channel by `factor` (factor > 1 = slower/longer)
- * without changing pitch, using waveform-similarity overlap-add.
+ * without changing pitch, using waveform-similarity overlap-add (WSOLA).
+ *
+ * The SYNTHESIS hop is fixed at win/2 so Hann overlap-add satisfies COLA
+ * (constant overlap-add) — this is what keeps the output free of the
+ * amplitude-modulation warble that a variable output hop produces.
+ * The ANALYSIS hop scales with the stretch factor instead.
  */
 export function stretchChannel(input: Float32Array, factor: number, sampleRate: number): Float32Array {
   if (Math.abs(factor - 1) < 0.001) return input.slice();
 
-  const winMs = 28;
-  const win = Math.round((winMs / 1000) * sampleRate) & ~1; // even
-  const maxShift = win >> 1;
+  const win = Math.round((30 / 1000) * sampleRate) & ~1; // even, ~30 ms
+  const synHop = win >> 1; // fixed synthesis hop → COLA with Hann
+  const anaHop = synHop * factor;
+  const maxShift = synHop >> 1;
 
   const outLen = Math.round(input.length * factor);
-  const out = new Float32Array(outLen + win * 2);
-
-  const inHop = win >> 1;
-  const outHop = Math.round(inHop * factor);
+  const out = new Float32Array(outLen + win);
 
   // Hann window
   const hann = new Float32Array(win);
   for (let i = 0; i < win; i++) hann[i] = 0.5 * (1 - Math.cos((2 * Math.PI * i) / win));
 
-  let inPos = 0;
-  let outPos = 0;
-  // prime with first window
+  // prime with the first window
   for (let i = 0; i < win && i < input.length; i++) out[i] += input[i] * hann[i];
-  inPos += inHop;
-  outPos += outHop;
+  let inPos = anaHop;
+  let outPos = synHop;
 
-  while (inPos + win < input.length && outPos + win < out.length) {
-    // WSOLA search: find offset around inPos whose waveform best matches the
-    // tail of what we already wrote.
-    const searchFrom = Math.max(0, inPos - maxShift);
-    const searchTo = Math.min(input.length - win, inPos + maxShift);
-    let bestOff = inPos;
+  while (inPos + win < input.length && outPos + win <= out.length) {
+    // WSOLA: search around the nominal input position for the offset whose
+    // overlap region best matches the tail of what is already written.
+    const searchFrom = Math.max(0, Math.round(inPos) - maxShift);
+    const searchTo = Math.min(input.length - win, Math.round(inPos) + maxShift);
+    let bestOff = Math.round(inPos);
     let bestCorr = -Infinity;
-    const compareLen = Math.min(maxShift, win >> 1);
-    for (let off = searchFrom; off <= searchTo; off += 4) {
+    // compare the first synHop samples of the candidate window against the
+    // last synHop samples already in the output
+    for (let off = searchFrom; off <= searchTo; off += 2) {
       let corr = 0;
-      for (let i = 0; i < compareLen; i += 2) {
-        corr += out[outPos - outHop + i + outHop - compareLen] * input[off + i];
+      for (let i = 0; i < synHop; i += 2) {
+        corr += out[outPos - synHop + i] * input[off + i];
       }
       if (corr > bestCorr) {
         bestCorr = corr;
@@ -50,10 +52,30 @@ export function stretchChannel(input: Float32Array, factor: number, sampleRate: 
     for (let i = 0; i < win; i++) {
       out[outPos + i] += input[bestOff + i] * hann[i];
     }
-    inPos = bestOff + inHop;
-    outPos += outHop;
+    inPos = bestOff + anaHop;
+    outPos += synHop;
   }
-  return out.slice(0, outLen);
+
+  const trimmed = out.slice(0, outLen);
+
+  // Level preservation: Hann COLA at hop win/2 sums to ~1, but edge effects
+  // and search drift can move overall gain — restore the original peak.
+  let inPeak = 0;
+  const stride = Math.max(1, input.length >> 16);
+  for (let i = 0; i < input.length; i += stride) {
+    const v = Math.abs(input[i]);
+    if (v > inPeak) inPeak = v;
+  }
+  let outPeak = 0;
+  for (let i = 0; i < trimmed.length; i += stride) {
+    const v = Math.abs(trimmed[i]);
+    if (v > outPeak) outPeak = v;
+  }
+  if (outPeak > 1e-6 && inPeak > 1e-6) {
+    const g = Math.min(2, Math.max(0.5, inPeak / outPeak));
+    for (let i = 0; i < trimmed.length; i++) trimmed[i] *= g;
+  }
+  return trimmed;
 }
 
 /**
