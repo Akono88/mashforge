@@ -13,7 +13,7 @@
 export function stretchChannel(input: Float32Array, factor: number, sampleRate: number): Float32Array {
   if (Math.abs(factor - 1) < 0.001) return input.slice();
 
-  const win = Math.round((30 / 1000) * sampleRate) & ~1; // even, ~30 ms
+  const win = Math.round((40 / 1000) * sampleRate) & ~1; // even, ~40 ms — wide enough for bass periods
   const synHop = win >> 1; // fixed synthesis hop → COLA with Hann
   const anaHop = synHop * factor;
   const maxShift = synHop >> 1;
@@ -80,19 +80,32 @@ export function stretchChannel(input: Float32Array, factor: number, sampleRate: 
 
 /**
  * Resample by ratio for pitch shift. ratio > 1 = higher pitch (shorter output).
- * Linear interpolation is sufficient at small shifts (± few semitones).
+ * 4-point Catmull-Rom cubic interpolation — dramatically less aliasing than
+ * linear interpolation on harmonic-rich music content.
  */
 export function resampleChannel(input: Float32Array, ratio: number): Float32Array {
   if (Math.abs(ratio - 1) < 0.0001) return input.slice();
-  const outLen = Math.max(1, Math.round(input.length / ratio));
+  const n = input.length;
+  const outLen = Math.max(1, Math.round(n / ratio));
   const out = new Float32Array(outLen);
   for (let i = 0; i < outLen; i++) {
     const pos = i * ratio;
     const idx = Math.floor(pos);
-    const frac = pos - idx;
-    const a = input[Math.min(idx, input.length - 1)];
-    const b = input[Math.min(idx + 1, input.length - 1)];
-    out[i] = a + (b - a) * frac;
+    const t = pos - idx;
+    const i0 = Math.max(0, idx - 1);
+    const i1 = Math.min(idx, n - 1);
+    const i2 = Math.min(idx + 1, n - 1);
+    const i3 = Math.min(idx + 2, n - 1);
+    const p0 = input[i0], p1 = input[i1], p2 = input[i2], p3 = input[i3];
+    // Catmull-Rom spline
+    const t2 = t * t;
+    const t3 = t2 * t;
+    out[i] = 0.5 * (
+      (2 * p1) +
+      (-p0 + p2) * t +
+      (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+      (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+    );
   }
   return out;
 }
